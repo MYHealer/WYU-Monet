@@ -9,7 +9,7 @@
 | 功能 | 说明 |
 |------|------|
 | 🎨 **莫奈取色** | Hook `Resources.getColor` / `TypedArray.getColor`，让 WPS 全局跟随系统动态取色（Material You / Monet） |
-| 💧 **液态玻璃底栏** | Miuix 风格毛玻璃底部导航栏 |
+| 🌈 **莫奈染色底栏** | WPS 底部导航栏图标、文字、背景跟随系统 accent 色动态染色 |
 | 🛡️ **去除 Root 检测** | 屏蔽 WPS 对 Root 环境的检测提示 |
 | 🧹 **去除水印** | 移除文档上的牛皮癣水印 |
 | ⏰ **自动打卡** | Root 常驻轮询定时器 + 独立 CheckinWorker，定时自动提交 WPS 表单，无需打开任何 App |
