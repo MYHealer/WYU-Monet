@@ -1,0 +1,24 @@
+# Gradle / Android 构建产物
+.gradle/
+.kotlin/
+build/
+*/build/
+local.properties
+*.apk
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# 截图（含界面信息）
+ss*.png
+
+# CheckinWorker 编译产物（源码见 checkin/ 目录）
+checkin/*.class
+checkin/classes.dex
+checkin/classes.dex.b64
+app/src/main/assets/CheckinWorker.dex
+
+# 日志
+*.log

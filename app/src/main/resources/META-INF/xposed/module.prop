@@ -1,0 +1,8 @@
+name=WYU-Monet
+version=5.0.0
+versionCode=5
+author=WPS-Enhancer
+description=莫奈取色 · 去除 Root 检测 · 去除启动页 · 去除牛皮癣水印 · Webhook 机器人
+minApiVersion=101
+targetApiVersion=102
+staticScope=true
