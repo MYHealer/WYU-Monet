@@ -19,14 +19,16 @@
 ## 效果预览
 
 <p align="center">
-  <img width="200" alt="预览1" src="https://github.com/user-attachments/assets/410a3e6f-869b-45ec-8c41-09fc980076de" />
+  <img src="https://github.com/user-attachments/assets/410a3e6f-869b-45ec-8c41-09fc980076de" width="200" alt="预览1" />
 </p>
 
-<p align="center">
-  <img width="180" alt="预览2" src="https://github.com/user-attachments/assets/1f891abe-5166-4303-8ff0-4198a0973d20" />&nbsp;
-  <img width="180" alt="预览3" src="https://github.com/user-attachments/assets/a91fd2c2-424c-4df1-8834-45bff86d64ef" />&nbsp;
-  <img width="180" alt="预览4" src="https://github.com/user-attachments/assets/294166a7-9394-4f0c-b68d-8d1f80651941" />
-</p>
+<table align="center">
+  <tr>
+    <td align="center"><img src="https://github.com/user-attachments/assets/1f891abe-5166-4303-8ff0-4198a0973d20" width="180" alt="预览2" /></td>
+    <td align="center"><img src="https://github.com/user-attachments/assets/a91fd2c2-424c-4df1-8834-45bff86d64ef" width="180" alt="预览3" /></td>
+    <td align="center"><img src="https://github.com/user-attachments/assets/294166a7-9394-4f0c-b68d-8d1f80651941" width="180" alt="预览4" /></td>
+  </tr>
+</table>
 ---
 
 ## ⏰ 自动打卡架构
