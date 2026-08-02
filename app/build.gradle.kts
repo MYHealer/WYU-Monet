@@ -3,6 +3,13 @@ plugins {
     alias(libs.plugins.composeCompiler)
 }
 
+// 读取签名配置（key.properties 已 git 忽略，勿提交密钥）
+import java.util.Properties
+val keyProps = Properties().apply {
+    val f = rootProject.file("key.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+
 android {
     namespace = "com.wps.enhancer"
     compileSdk = 37
@@ -15,12 +22,27 @@ android {
         versionName = "4.0.0"
     }
 
+    signingConfigs {
+        if (keyProps.isNotEmpty()) {
+            create("release") {
+                storeFile = rootProject.file(keyProps["storeFile"] as String)
+                storePassword = keyProps["storePassword"] as String
+                keyAlias = keyProps["keyAlias"] as String
+                keyPassword = keyProps["keyPassword"] as String
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+            }
+        }
+    }
+
     buildTypes {
         getByName("debug") {
             isMinifyEnabled = false
         }
         getByName("release") {
             isMinifyEnabled = false
+            signingConfig = if (keyProps.isNotEmpty()) signingConfigs.getByName("release") else null
         }
     }
 

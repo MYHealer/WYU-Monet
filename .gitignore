@@ -11,6 +11,11 @@ local.properties
 *.iml
 .DS_Store
 
+# 签名密钥（勿提交！泄露=可冒充你的应用签名）
+*.jks
+*.keystore
+key.properties
+
 # 截图（含界面信息）
 ss*.png
 

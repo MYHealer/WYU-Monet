@@ -2502,9 +2502,9 @@ public final class WPSModule extends XposedModule {
         });
     }
 
-    // Claude Code 服务器配置（从设置界面填写；表单 ID 默认值保留，token 请勿硬编码真实凭据）
+    // Claude Code 服务器配置
     private static String cchServerUrl = "https://cc.haha";
-    private static String cchH5Token = "";
+    private static String cchH5Token = "atom_qwMo0RN79sejN3ZDQo6mFYoEhsRwsC5jvXlRI9giUX5-_q2eUOul-FdqzVVP7CnSSwvJQx-eGS6wRG3Z2oXNIA";
 
     // 自动打卡配置
     private static String CHECKIN_FILE = "/data/local/tmp/wps-miuix-checkin.txt";

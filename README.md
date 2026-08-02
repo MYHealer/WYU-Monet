@@ -97,8 +97,14 @@
 需要 Android SDK（`compileSdk 37`）、JDK 17+。
 
 ```bash
+# debug 包（调试用）
 ./gradlew :app:assembleDebug
+
+# release 包（正式发布，v2+v3 签名）
+./gradlew :app:assembleRelease
 ```
+
+release 签名使用本地 `wyu-monet-release.jks`（配置见 `key.properties`），两者均已 git 忽略，不会随仓库分发。构建环境若没有该 keystore，release 产出未签名包。
 
 ### 重新编译 CheckinWorker.dex
 
