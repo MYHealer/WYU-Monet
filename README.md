@@ -16,6 +16,16 @@
 | 🤖 **Claude Code 集成** | WebSocket 连接远程 AI 助手，宠物气泡 UI + Webhook 过滤 |
 
 ---
+## 效果预览
+<img width="2160" height="2880" alt="image" src="https://github.com/user-attachments/assets/410a3e6f-869b-45ec-8c41-09fc980076de" />
+
+<img width="1440" height="3200" alt="image" src="https://github.com/user-attachments/assets/1f891abe-5166-4303-8ff0-4198a0973d20" />
+
+<img width="1440" height="3200" alt="image" src="https://github.com/user-attachments/assets/a91fd2c2-424c-4df1-8834-45bff86d64ef" />
+
+<img width="1440" height="3200" alt="image" src="https://github.com/user-attachments/assets/294166a7-9394-4f0c-b68d-8d1f80651941" />
+
+
 
 ## 🗂️ 项目结构
 
