@@ -17,30 +17,16 @@
 
 ---
 ## 效果预览
-<img width="2160" height="2880" alt="image" src="https://github.com/user-attachments/assets/410a3e6f-869b-45ec-8c41-09fc980076de" />
 
-<img width="1440" height="3200" alt="image" src="https://github.com/user-attachments/assets/1f891abe-5166-4303-8ff0-4198a0973d20" />
+<p align="center">
+  <img width="200" alt="预览1" src="https://github.com/user-attachments/assets/410a3e6f-869b-45ec-8c41-09fc980076de" />
+</p>
 
-<img width="1440" height="3200" alt="image" src="https://github.com/user-attachments/assets/a91fd2c2-424c-4df1-8834-45bff86d64ef" />
-
-<img width="1440" height="3200" alt="image" src="https://github.com/user-attachments/assets/294166a7-9394-4f0c-b68d-8d1f80651941" />
-
-
-
-## 🗂️ 项目结构
-
-```
-├── app/                    LSPosed 模块主体
-│   └── src/main/java/com/wps/enhancer/
-│       ├── WPSModule.java      Xposed 入口 + 全部 Hook 逻辑 + KIM 菜单注入
-│       ├── MainActivity.kt     独立 App UI（功能总开关）
-│       ├── BootReceiver.kt     开机自启，重派 root 定时器
-│       └── DoujieActivity.java 彩蛋页（未启用）
-├── checkin/                CheckinWorker 独立 DEX 源码（root 后台打卡）
-├── libxposed-stubs/        libxposed API 本地编译 stub
-└── miuix-*/                Miuix (HyperOS) Compose 组件库
-```
-
+<p align="center">
+  <img width="180" alt="预览2" src="https://github.com/user-attachments/assets/1f891abe-5166-4303-8ff0-4198a0973d20" />&nbsp;
+  <img width="180" alt="预览3" src="https://github.com/user-attachments/assets/a91fd2c2-424c-4df1-8834-45bff86d64ef" />&nbsp;
+  <img width="180" alt="预览4" src="https://github.com/user-attachments/assets/294166a7-9394-4f0c-b68d-8d1f80651941" />
+</p>
 ---
 
 ## ⏰ 自动打卡架构
