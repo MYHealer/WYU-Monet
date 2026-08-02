@@ -1,6 +1,6 @@
 # WYU-Monet
 
-> WPS Office (`com.wps.koa`) 的 LSPosed / Xposed 增强模块，基于 Miuix (HyperOS) Compose 构建原生质感界面。
+> **「数智邑大」增强模块** —— 数智邑大（五邑大学套壳 WPS 协同版，`com.wps.koa`）的 LSPosed / Xposed 增强模块，基于 Miuix (HyperOS) Compose 构建原生质感界面。
 
 ---
 
