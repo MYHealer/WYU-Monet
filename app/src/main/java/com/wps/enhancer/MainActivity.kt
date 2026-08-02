@@ -84,7 +84,13 @@ private fun deployFiles() {
         "/data/local/tmp/wps-miuix.log",
         "/data/local/tmp/wps-miuix-config.txt",
         "/data/local/tmp/wps-miuix-session.txt",
-        "/data/local/tmp/wps-miuix-petpos.txt"
+        "/data/local/tmp/wps-miuix-petpos.txt",
+        // 功能开关 flag（应用进程无 /data/local/tmp 创建权限，必须预先 touch + chmod 666）
+        "/data/local/tmp/wyu-pet-enabled",
+        "/data/local/tmp/wyu-checkin-enabled",
+        "/data/local/tmp/wyu-monet-enabled",
+        "/data/local/tmp/wyu-root-hide",
+        "/data/local/tmp/wyu-watermark"
     )
     try {
         val cmd = files.joinToString("") { "touch $it && chmod 666 $it && " } + "echo ok"
@@ -289,12 +295,19 @@ enum class RootState { Requesting, Granted, Denied }
 
 // 持久化开关状态到 /data/local/tmp/（world-readable，WPS 进程可直接读取）
 private suspend fun saveFlag(key: String, value: Boolean) = withContext(Dispatchers.IO) {
+    val path = "/data/local/tmp/$key"
+    val content = if (value) "1" else "0"
     try {
-        val path = "/data/local/tmp/$key"
-        FileWriter(path).use { it.write(if (value) "1" else "0") }
-        // chmod 666 让 WPS 进程（不同 UID）也能读写
-        try { ProcessBuilder("su", "-c", "chmod 666 $path").start().waitFor() } catch (_: Exception) {}
-    } catch (_: Exception) {}
+        // 预创建文件后应用进程可直接写（无需 su）
+        FileWriter(path).use { it.write(content) }
+    } catch (_: Exception) {
+        // 兜底：文件未预创建 / 目录无写权限时走 su 强制写入
+        try {
+            ProcessBuilder("su", "-c", "echo -n '$content' > $path").start().waitFor()
+        } catch (_: Exception) {}
+    }
+    // chmod 666 让 WPS 进程（不同 UID）也能读写
+    try { ProcessBuilder("su", "-c", "chmod 666 $path").start().waitFor() } catch (_: Exception) {}
 }
 
 private fun readFlag(key: String): Boolean {
