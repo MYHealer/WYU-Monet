@@ -13,7 +13,7 @@
 | 🛡️ **去除 Root 检测** | 屏蔽 WPS 对 Root 环境的检测提示 |
 | 🧹 **去除水印** | 移除文档上的牛皮癣水印 |
 | ⏰ **自动打卡** | Root 常驻轮询定时器 + 独立 CheckinWorker，定时自动提交 WPS 表单，无需打开任何 App |
-| 🤖 **Claude Code 集成** | WebSocket 连接远程 AI 助手，宠物气泡 UI + Webhook 过滤 |
+| 🤖 **Claude Code 集成** | WebSocket 连接远程 AI 助手，宠物气泡 UI |
 
 ---
 ## 效果预览
