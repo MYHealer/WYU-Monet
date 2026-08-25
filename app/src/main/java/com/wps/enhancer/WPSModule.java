@@ -153,6 +153,18 @@ public final class WPSModule extends XposedModule {
                 // 每次启动 WPS 清空表单字段缓存，下次打卡自动从 API 重新读取
                 checkinClockinFields = "";
                 checkinClockinValues = "";
+                try {
+                    String p = readFileQuiet(PARAMS_FILE);
+                    if (!p.isEmpty()) {
+                        StringBuilder sb = new StringBuilder();
+                        for (String line : p.split("\n")) {
+                            String t = line.trim();
+                            if (t.startsWith("fields=") || t.startsWith("values=") || t.startsWith("cachedCampaign=")) continue;
+                            sb.append(line).append("\n");
+                        }
+                        saveRootFile(PARAMS_FILE, sb.toString());
+                    }
+                } catch (Throwable ignored) {}
                 requestRoot(ctx); // 第一时间请求 root 权限
                 deployCheckinWorker(); // 部署独立打卡程序
                 if (checkinEnabled) scheduleCheckin(null);
