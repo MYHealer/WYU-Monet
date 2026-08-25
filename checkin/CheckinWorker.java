@@ -52,14 +52,11 @@ public class CheckinWorker {
             referer = "https://f.kdocs.cn/ksform/cw/w/" + cid;
             if (inputName.isEmpty()) { log("no inputName"); return; }
 
-            // 换了表单：清空旧缓存，强制重新读取新表单格式
-            if (!cachedCid.isEmpty() && !cachedCid.equals(cid)) {
-                log("campaign changed: " + cachedCid + " -> " + cid + ", clearing cached fields/values");
-                fields = "";
-                values = "";
-            }
+            // 每次运行都重新读取表单字段，不依赖缓存（换表单/改配置后自动生效）
+            fields = "";
+            values = "";
 
-            if (department.isEmpty() || studentId.isEmpty() || fields.isEmpty() || values.isEmpty()) {
+            if (department.isEmpty() || studentId.isEmpty()) {
                 try {
                     String answersResp = post("https://f-api.kdocs.cn/ksform/api/v3/campaign/" + cid + "/answers/list",
                         "{\"page\":1,\"pageSize\":5}", cookies, csrf, ua, referer);
