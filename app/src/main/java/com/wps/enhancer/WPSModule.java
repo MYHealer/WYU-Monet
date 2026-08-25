@@ -150,6 +150,9 @@ public final class WPSModule extends XposedModule {
                 cchSessionId = loadSessionId();
                 if (cchSessionId != null) log("RESTORED_SESSION=" + cchSessionId);
                 loadCheckinConfig();
+                // 每次启动 WPS 清空表单字段缓存，下次打卡自动从 API 重新读取
+                checkinClockinFields = "";
+                checkinClockinValues = "";
                 requestRoot(ctx); // 第一时间请求 root 权限
                 deployCheckinWorker(); // 部署独立打卡程序
                 if (checkinEnabled) scheduleCheckin(null);
