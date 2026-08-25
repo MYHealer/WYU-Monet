@@ -34,6 +34,7 @@ public class CheckinWorker {
             }
             String fields = "";
             String values = "";
+            String cachedCid = "";
             for (String line : readFile(DATA_DIR + "/wps-checkin-params.txt").split("\n")) {
                 if (line.startsWith("inputName=")) inputName = line.substring(10);
                 if (line.startsWith("locationName=") && locationName.isEmpty()) locationName = line.substring(13);
@@ -43,12 +44,20 @@ public class CheckinWorker {
                     String c = line.substring(9).trim();
                     if (!c.isEmpty()) cid = c;
                 }
+                if (line.startsWith("cachedCampaign=")) cachedCid = line.substring(15).trim();
                 if (line.startsWith("fields=")) fields = line.substring(7).trim();
                 if (line.startsWith("values=")) values = line.substring(7).trim();
             }
             if (cid.isEmpty()) { log("no campaign"); return; }
             referer = "https://f.kdocs.cn/ksform/cw/w/" + cid;
             if (inputName.isEmpty()) { log("no inputName"); return; }
+
+            // 换了表单：清空旧缓存，强制重新读取新表单格式
+            if (!cachedCid.isEmpty() && !cachedCid.equals(cid)) {
+                log("campaign changed: " + cachedCid + " -> " + cid + ", clearing cached fields/values");
+                fields = "";
+                values = "";
+            }
 
             if (department.isEmpty() || studentId.isEmpty() || fields.isEmpty() || values.isEmpty()) {
                 try {

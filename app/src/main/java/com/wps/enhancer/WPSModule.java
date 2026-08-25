@@ -1948,10 +1948,21 @@ public final class WPSModule extends XposedModule {
                 String params = readFileQuiet(PARAMS_FILE);
                 StringBuilder sb = new StringBuilder();
                 boolean found = false;
+                boolean campaignChanged = false;
+                String oldCid = "";
                 for (String line : params.split("\n")) {
                     String t = line.trim();
                     if (t.isEmpty()) continue;
-                    if (t.startsWith("campaign=")) { sb.append("campaign=").append(cid).append("\n"); found = true; }
+                    if (t.startsWith("campaign=")) {
+                        oldCid = t.substring(9).trim();
+                        if (!oldCid.equals(cid)) campaignChanged = true;
+                        sb.append("campaign=").append(cid).append("\n");
+                        found = true;
+                    }
+                    // campaign 变化时清空旧缓存，强制下次打卡重新读取新表单格式
+                    else if (campaignChanged && (t.startsWith("cachedCampaign=") || t.startsWith("fields=") || t.startsWith("values="))) {
+                        log("campaign changed " + oldCid + " -> " + cid + ", dropping cached: " + t.substring(0, t.indexOf('=')));
+                    }
                     else sb.append(line).append("\n");
                 }
                 if (!found) sb.append("campaign=").append(cid).append("\n");
@@ -4151,6 +4162,7 @@ public final class WPSModule extends XposedModule {
                         + "lng=" + checkinLng + "\n"
                         + "ua=Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 WPS-Miuix/1.0\n"
                         + "campaign=" + CAMPAIGN_ID + "\n"
+                        + "cachedCampaign=" + CAMPAIGN_ID + "\n"
                         + "fields=" + checkinClockinFields + "\n"
                         + "values=" + checkinClockinValues + "\n";
                     saveRootFile(PARAMS_FILE, params);
