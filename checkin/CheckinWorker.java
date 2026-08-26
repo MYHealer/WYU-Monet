@@ -123,21 +123,55 @@ public class CheckinWorker {
                 clockinField = fieldMatcher.group(1);
             }
             if (fields.isEmpty()) {
-                java.util.regex.Matcher cm = java.util.regex.Pattern
-                    .compile("\"(clockin[A-Z][A-Za-z]*)\"")
-                    .matcher(formResp);
-                StringBuilder sb = new StringBuilder();
-                String[] skip = {"clockinInfo", "clockinInfoValue", "clockinStatus"};
-                while (cm.find()) {
-                    String f = cm.group(1);
-                    boolean s = false;
-                    for (String x : skip) if (f.equals(x)) { s = true; break; }
-                    if (s) continue;
-                    if (sb.indexOf(f) >= 0) continue;
-                    if (sb.length() > 0) sb.append(",");
-                    sb.append(f);
+                // 在 subQuestions 块中解析，只保留 delete!=true 的字段
+                int sqIdx = formResp.indexOf("\"subQuestions\"");
+                if (sqIdx > 0) {
+                    // 找到 subQuestions 数组的起止
+                    int arrStart = formResp.indexOf("[", sqIdx);
+                    int arrEnd = formResp.indexOf("]", arrStart);
+                    if (arrStart > 0 && arrEnd > arrStart) {
+                        String sqBlock = formResp.substring(arrStart, arrEnd + 1);
+                        // 按 },{ 或 },{ 分割每个字段对象
+                        java.util.regex.Matcher fm = java.util.regex.Pattern
+                            .compile("\"(clockin[A-Z][A-Za-z]*)\"")
+                            .matcher(sqBlock);
+                        StringBuilder sb = new StringBuilder();
+                        while (fm.find()) {
+                            String f = fm.group(1);
+                            if (f.equals("clockinInfo") || f.equals("clockinInfoValue") || f.equals("clockinStatus")) continue;
+                            if (sb.indexOf(f) >= 0) continue;
+                            // 检查该字段对象中是否有 "delete":true
+                            int fStart = fm.start();
+                            int objStart = sqBlock.lastIndexOf("{", fStart);
+                            int objEnd = sqBlock.indexOf("}", fStart);
+                            if (objStart >= 0 && objEnd > objStart) {
+                                String obj = sqBlock.substring(objStart, objEnd + 1);
+                                if (obj.contains("\"delete\":true")) continue;
+                            }
+                            if (sb.length() > 0) sb.append(",");
+                            sb.append(f);
+                        }
+                        if (sb.length() > 0) fields = sb.toString();
+                    }
                 }
-                if (sb.length() > 0) fields = sb.toString();
+                // fallback: 如果 subQuestions 解析失败，用旧的全量匹配
+                if (fields.isEmpty()) {
+                    java.util.regex.Matcher cm = java.util.regex.Pattern
+                        .compile("\"(clockin[A-Z][A-Za-z]*)\"")
+                        .matcher(formResp);
+                    StringBuilder sb = new StringBuilder();
+                    String[] skip = {"clockinInfo", "clockinInfoValue", "clockinStatus"};
+                    while (cm.find()) {
+                        String f = cm.group(1);
+                        boolean s = false;
+                        for (String x : skip) if (f.equals(x)) { s = true; break; }
+                        if (s) continue;
+                        if (sb.indexOf(f) >= 0) continue;
+                        if (sb.length() > 0) sb.append(",");
+                        sb.append(f);
+                    }
+                    if (sb.length() > 0) fields = sb.toString();
+                }
             }
             int optIdx = formResp.indexOf("\"commitConfig\"");
             if (optIdx > 0) {

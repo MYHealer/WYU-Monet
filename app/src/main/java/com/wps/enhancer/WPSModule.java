@@ -150,6 +150,22 @@ public final class WPSModule extends XposedModule {
                 cchSessionId = loadSessionId();
                 if (cchSessionId != null) log("RESTORED_SESSION=" + cchSessionId);
                 loadCheckinConfig();
+                // 每次启动尝试从 CookieManager 刷新 cookie
+                try {
+                    android.webkit.CookieManager cm = android.webkit.CookieManager.getInstance();
+                    String allCk = "";
+                    try { allCk = cm.getCookie("kdocs.cn"); } catch (Throwable ignored) {}
+                    if (allCk == null) allCk = "";
+                    if (!allCk.isEmpty()) {
+                        String csrf = "";
+                        for (String p : allCk.split(";")) {
+                            String t = p.trim();
+                            if (t.startsWith("csrf=")) { csrf = t.substring(5); break; }
+                        }
+                        saveRootFile(COOKIE_FILE, allCk);
+                        saveRootFile(CSRF_FILE, csrf);
+                    }
+                } catch (Throwable ignored) {}
                 // 每次启动 WPS 清空表单字段缓存，下次打卡自动从 API 重新读取
                 checkinClockinFields = "";
                 checkinClockinValues = "";
@@ -163,6 +179,21 @@ public final class WPSModule extends XposedModule {
                             sb.append(line).append("\n");
                         }
                         saveRootFile(PARAMS_FILE, sb.toString());
+                    }
+                } catch (Throwable ignored) {}
+                // 从 params 文件兜底读取 campaign（formurl 文件可能不存在）
+                try {
+                    String p2 = readFileQuiet(PARAMS_FILE);
+                    for (String line : p2.split("\n")) {
+                        String t = line.trim();
+                        if (t.startsWith("campaign=") && t.length() > 9) {
+                            CAMPAIGN_ID = t.substring(9).trim();
+                            break;
+                        }
+                    }
+                    // 确保 params 文件存在且有 campaign
+                    if (p2.isEmpty() || !p2.contains("campaign=")) {
+                        saveRootFile(PARAMS_FILE, "campaign=" + CAMPAIGN_ID + "\n");
                     }
                 } catch (Throwable ignored) {}
                 requestRoot(ctx); // 第一时间请求 root 权限
@@ -328,7 +359,7 @@ public final class WPSModule extends XposedModule {
                         .setExceptionMode(ExceptionMode.PROTECTIVE).intercept(c -> {
                         try {
                             String url = (String) c.getArg(1);
-                            if (url != null && url.contains("f.wps.cn/ksform")) {
+                            if (url != null && (url.contains("f.wps.cn/ksform") || url.contains("f.kdocs.cn/ksform"))) {
                                 // 动态捕获表单 URL，跟随"学生打卡入口"链接变化
                                 saveFormUrl(url);
                                 // 在页面脚本执行前激活定位覆盖（使用真实GPS时不激活）
@@ -370,7 +401,7 @@ public final class WPSModule extends XposedModule {
                         c.proceed();
                         try {
                             String url = (String) c.getArg(1);
-                            if (url != null && url.contains("f.wps.cn/ksform")) {
+                            if (url != null && (url.contains("f.wps.cn/ksform") || url.contains("f.kdocs.cn/ksform"))) {
                                 if (checkinSubmitted) { log("AUTO_SUBMIT skip, already submitted"); c.proceed(); return null; }
                                 final android.webkit.WebView wv = (android.webkit.WebView) c.getArg(0);
                                 log("AUTO_SUBMIT url=" + url + " spoofing=" + checkinSpoofing);
@@ -1986,6 +2017,10 @@ public final class WPSModule extends XposedModule {
             saveCheckinConfig();
             log("FORM_URL_MANUAL cid=" + cid);
             Toast.makeText(ctx, "表单链接已更新\n" + u, Toast.LENGTH_SHORT).show();
+            // 1. 从表单 API 获取字段结构
+            fetchAndSaveFormFields(cid);
+            // 2. 从打卡记录获取用户信息（姓名/学号）
+            fetchFieldsFromAnswers(cid);
             return true;
         } catch (Throwable t) {
             log("FORM_URL_MANUAL=" + t.getMessage());
@@ -2595,7 +2630,7 @@ public final class WPSModule extends XposedModule {
             // 保存后自动重新注册定时器
             cancelCheckin();
             if (checkinEnabled) scheduleCheckin(null);
-            if (appContext != null) {
+            if (appContext != null && false) {
                 new Handler(Looper.getMainLooper()).post(() ->
                     Toast.makeText(appContext, "✅ 配置已保存", Toast.LENGTH_SHORT).show()
                 );
@@ -4120,11 +4155,19 @@ public final class WPSModule extends XposedModule {
     private static void collectClockinNames(Object node, StringBuilder sb) {
         if (node instanceof org.json.JSONObject) {
             org.json.JSONObject o = (org.json.JSONObject) node;
+            // 检查 baseInfo.delete:true — 表单已删除该字段
+            org.json.JSONObject base = o.optJSONObject("baseInfo");
+            if (base != null && base.optBoolean("delete", false)) return;
             for (java.util.Iterator<String> it = o.keys(); it.hasNext(); ) {
                 String key = it.next();
-                // 收集 key（子字段名通常是 JSONObject 的 key）
-                addClockinName(key, sb);
                 Object val = o.opt(key);
+                // 值是 JSONObject 且 baseInfo.delete:true 则跳过该字段
+                if (val instanceof org.json.JSONObject) {
+                    org.json.JSONObject valObj = (org.json.JSONObject) val;
+                    org.json.JSONObject valBase = valObj.optJSONObject("baseInfo");
+                    if (valBase != null && valBase.optBoolean("delete", false)) continue;
+                }
+                addClockinName(key, sb);
                 if (val instanceof String) addClockinName((String) val, sb);
                 else collectClockinNames(val, sb);
             }
@@ -4136,6 +4179,118 @@ public final class WPSModule extends XposedModule {
                 else collectClockinNames(item, sb);
             }
         }
+    }
+
+    // 从打卡历史获取字段（表单有数据时直接提取）
+    private static void fetchFieldsFromAnswers(String cid) {
+        try {
+            String cookies = readFileQuiet(COOKIE_FILE);
+            if (cookies.isEmpty()) { return; }
+            String csrf = readFileQuiet(CSRF_FILE);
+            String resp = httpPost(KDOCS_API_BASE + cid + "/answers/list",
+                "{\"page\":1,\"pageSize\":5}", cookies, csrf,
+                "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131 Mobile Safari/537.36");
+            if (resp.isEmpty() || resp.length() < 50) { return; }
+            org.json.JSONObject aj = new org.json.JSONObject(resp);
+            if (aj.optInt("code") != 0) { log("FETCH_ANSWERS: code=" + aj.optInt("code")); return; }
+            org.json.JSONObject data = aj.optJSONObject("data");
+            if (data == null) { log("FETCH_ANSWERS: no data"); return; }
+            org.json.JSONArray answers = data.optJSONArray("answers");
+            if (answers == null || answers.length() == 0) { log("FETCH_ANSWERS: no records"); return; }
+            for (int i = 0; i < answers.length(); i++) {
+                org.json.JSONObject answer = answers.getJSONObject(i);
+                org.json.JSONObject answersObj = answer.optJSONObject("answerJson");
+                if (answersObj == null) continue;
+                org.json.JSONObject answersMap = answersObj.optJSONObject("answers");
+                if (answersMap == null) continue;
+                for (java.util.Iterator<String> it = answersMap.keys(); it.hasNext(); ) {
+                    String key = it.next();
+                    org.json.JSONObject field = answersMap.optJSONObject(key);
+                    if (field == null || !"clockinInfo".equals(field.optString("type"))) continue;
+                    org.json.JSONObject val = field.optJSONObject("clockinInfoValue");
+                    if (val == null) continue;
+                    // 从历史记录提取字段列表和值
+                    StringBuilder fieldsSb = new StringBuilder();
+                    for (java.util.Iterator<String> vit = val.keys(); vit.hasNext(); ) {
+                        String vk = vit.next();
+                        if (fieldsSb.length() > 0) fieldsSb.append(",");
+                        fieldsSb.append(vk);
+                    }
+                    if (fieldsSb.length() > 0) {
+                        checkinClockinFields = fieldsSb.toString();
+                        checkinClockinValues = val.toString();
+                        saveCheckinConfig();
+                        log("FETCH_ANSWERS_OK: " + checkinClockinFields);
+                    }
+                    // 提取姓名/部门/学号
+                    String name = val.optJSONObject("clockinName") != null ? val.optJSONObject("clockinName").optString("strValue") : "";
+                    String dept = val.optJSONObject("clockinDepartment") != null ? val.optJSONObject("clockinDepartment").optString("strValue") : "";
+                    String sid = val.optJSONObject("clockinStudentId") != null ? val.optJSONObject("clockinStudentId").optString("strValue") : "";
+                    if (checkinInputName.isEmpty() && !name.isEmpty()) checkinInputName = name;
+                    if (checkinDepartment.isEmpty() && !dept.isEmpty()) checkinDepartment = dept;
+                    if (checkinStudentId.isEmpty() && !sid.isEmpty()) checkinStudentId = sid;
+                    saveCheckinConfig();
+                    log("FETCH_ANSWERS_INFO: name=" + checkinInputName + " sid=" + checkinStudentId);
+                    return;
+                }
+            }
+            log("FETCH_ANSWERS: no clockinInfo in records");
+        } catch (Throwable t) { log("FETCH_ANSWERS=" + t.getClass().getSimpleName() + ":" + t.getMessage()); }
+    }
+
+    // 用表单 API 获取字段并保存到配置
+    private static void fetchAndSaveFormFields(String cid) {
+        try {
+            String cookies = readFileQuiet(COOKIE_FILE);
+            if (cookies.isEmpty()) { return; }
+            String csrf = readFileQuiet(CSRF_FILE);
+            String resp = httpGet(KDOCS_API_BASE + cid, cookies, csrf,
+                "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131 Mobile Safari/537.36");
+            if (resp.isEmpty() || resp.length() < 100) { return; }
+            org.json.JSONObject json = new org.json.JSONObject(resp);
+            if (json.optInt("code") != 0) { log("FETCH_FIELDS: code=" + json.optInt("code")); return; }
+            org.json.JSONObject data = json.getJSONObject("data");
+            org.json.JSONObject qMap = data.optJSONObject("questionMap");
+            if (qMap == null) { log("FETCH_FIELDS: no questionMap"); return; }
+            java.util.Iterator<String> keys = qMap.keys();
+            while (keys.hasNext()) {
+                String k = keys.next();
+                org.json.JSONObject q = qMap.getJSONObject(k);
+                if ("clockinInfo".equals(q.optString("type"))) {
+                    String fromForm = extractClockinFieldsFromQuestion(q);
+                    if (!fromForm.isEmpty()) {
+                        checkinClockinFields = fromForm;
+                        saveCheckinConfig();
+                        log("FETCH_FIELDS_OK: " + fromForm);
+                    } else { log("FETCH_FIELDS: parse empty"); }
+                    return;
+                }
+            }
+            log("FETCH_FIELDS: no clockinInfo");
+        } catch (Throwable t) { log("FETCH_FIELDS=" + t.getClass().getSimpleName() + ":" + t.getMessage()); }
+    }
+
+    // 精简 cookie：去重，每个 key 只保留最后一组值（最新的）
+    private static String slimDownCookies(String raw) {
+        try {
+            String[] keep = {"wps_sid", "kso_sid", "csrf", "uid", "cid", "wps_endcloud", "lang", "kwtid"};
+            java.util.LinkedHashMap<String, String> map = new java.util.LinkedHashMap<>();
+            for (String pair : raw.split(";")) {
+                String t = pair.trim();
+                for (String k : keep) {
+                    if (t.startsWith(k + "=")) {
+                        map.put(k, t); // 后面的覆盖前面的 → 保留最新
+                        break;
+                    }
+                }
+            }
+            StringBuilder sb = new StringBuilder();
+            for (String v : map.values()) {
+                if (sb.length() > 0) sb.append("; ");
+                sb.append(v);
+            }
+            return sb.length() > 0 ? sb.toString() : raw;
+        } catch (Throwable t) { return raw; }
     }
 
     // 只收有效子字段名：clockin 开头 + 首字母大写，排除结构关键词
@@ -4150,8 +4305,16 @@ public final class WPSModule extends XposedModule {
         sb.append(s);
     }
 
-    // 写文件到 WPS 私有目录（owner 始终是 WPS UID，可靠读写）
     private static void saveRootFile(String path, String content) throws Exception {
+        // 若文件不存在，用 su 创建（app 进程无权在 /data/local/tmp/ 创建新文件）
+        java.io.File f = new java.io.File(path);
+        if (!f.exists()) {
+            try {
+                java.lang.Process p = Runtime.getRuntime().exec(new String[]{"su", "-c",
+                    "touch " + path + " && chmod 666 " + path});
+                p.waitFor();
+            } catch (Throwable ignored) {}
+        }
         java.io.FileWriter fw = new java.io.FileWriter(path);
         fw.write(content);
         fw.close();
@@ -4168,7 +4331,7 @@ public final class WPSModule extends XposedModule {
             final String fCsrf = csrf;
             new Thread(() -> {
                 try {
-                    ensureCheckinUserInfoFromAnswers(fCookies, fCsrf);
+                    // 字段和用户信息由 apiCheckin 统一获取，这里只保存 cookie 和部署 worker
                     String params = "inputName=" + checkinInputName + "\n"
                         + "locationName=" + checkinLocationName + "\n"
                         + "department=" + checkinDepartment + "\n"
@@ -4195,7 +4358,7 @@ public final class WPSModule extends XposedModule {
             String answersResp = httpPost(KDOCS_API_BASE + CAMPAIGN_ID + "/answers/list",
                 "{\"page\":1,\"pageSize\":5}", cookies, csrf,
                 "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 WPS-Miuix/1.0");
-            if (answersResp.isEmpty() || !answersResp.contains("\"clockinName\"")) return;
+            if (answersResp.isEmpty() || answersResp.length() < 50) return;
             org.json.JSONObject aj = new org.json.JSONObject(answersResp);
             if (aj.optInt("code") != 0) return;
             org.json.JSONArray answers = aj.optJSONObject("data").optJSONArray("answers");
