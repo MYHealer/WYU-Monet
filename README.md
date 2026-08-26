@@ -57,6 +57,7 @@
 - **PID 自锁**：脚本写 PID 文件 + `kill -0` 探测，防止重复派发
 - **开机自启**：`BootReceiver` 等待 Magisk `su` 就绪（最多 5 分钟重试）后重新派发
 - **凭证运行时捕获**：Cookie / CSRF / 学号 / 姓名 / 院系均为运行时从 WPS 会话与表单历史自动解析，不写死
+- **表单字段自适应**：通过 `baseInfo.delete` 标记自动识别有效字段，表单增删字段无需改代码（详见 [表单字段自适应算法](docs/form-field-adaptation.md)）
 
 ---
 
