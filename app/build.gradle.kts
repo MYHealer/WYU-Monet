@@ -18,8 +18,8 @@ android {
         applicationId = "com.wps.enhancer"
         minSdk = 26
         targetSdk = 36
-        versionCode = 10
-        versionName = "5.0.5"
+        versionCode = 11
+        versionName = "5.0.6"
     }
 
     signingConfigs {

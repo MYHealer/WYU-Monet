@@ -31,8 +31,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // 预创建 WPS 进程需要写入的文件（chmod 666 让不同 UID 可读写）
         Thread {
-            deployFiles(this)
-            scheduleRootCheckin()
+            try { deployFiles(this) } catch (_: Exception) {}
+            try { scheduleRootCheckin(this) } catch (_: Exception) {}
         }.apply { isDaemon = true; name = "wyu-init" }.start()
         setContent {
             MiuixTheme {
@@ -42,23 +42,55 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// 模块 app（有 root）派发 root 常驻轮询定时器：每分钟检查配置到点打卡，永不退出，不依赖任何 app
-fun scheduleRootCheckin() {
+// 模块 app（有 root）派发 root 常驻轮询定时器
+fun scheduleRootCheckin(ctx: android.content.Context? = null) {
     Thread {
         try {
-            // 防重复：已有 root 定时器在跑则跳过（常驻循环会一直运行）
-            if (isRootTimerAlive()) {
-                return@Thread
+            // 防重复：已有 root 定时器在跑则跳过
+            if (isRootTimerAlive()) return@Thread
+            // 写调度脚本——先写到 cacheDir（app 有权限），再 su cp 到 /data/local/tmp/
+            val dataDir = "/data/user/0/com.wps.koa/files"
+            val script =
+                "#!/system/bin/sh\n" +
+                "CFG=\"$dataDir/wps-miuix-checkin.txt\"\n" +
+                "PIDF=\"$dataDir/wps-checkin-timer.pid\"\n" +
+                "if [ ! -f \"\$CFG\" ]; then exit 0; fi\n" +
+                "ENABLED=\$(sed -n '1p' \"\$CFG\" | tr -d ' ')\n" +
+                "if [ \"\$ENABLED\" != \"true\" ]; then exit 0; fi\n" +
+                "if [ -f \"\$PIDF\" ]; then\n" +
+                "  OLD=\$(cat \"\$PIDF\")\n" +
+                "  if [ -n \"\$OLD\" ] && kill -0 \"\$OLD\" 2>/dev/null; then exit 0; fi\n" +
+                "fi\n" +
+                "CLASSPATH=/data/local/tmp/CheckinWorker.dex app_process / CheckinWorker schedule\n"
+            val targetPath = "/data/local/tmp/wyu-schedule.sh"
+            // 方案 A：先写 cacheDir，su cp 部署
+            var deployed = false
+            if (ctx != null) {
+                try {
+                    val tmpScript = java.io.File(ctx.cacheDir, "wyu-schedule.sh")
+                    tmpScript.writeText(script)
+                    tmpScript.setExecutable(true)
+                    val cp = Runtime.getRuntime().exec(arrayOf("su", "-c",
+                        "cp ${tmpScript.absolutePath} $targetPath && chmod 755 $targetPath"))
+                    if (cp.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) deployed = true
+                    tmpScript.delete()
+                } catch (_: Exception) {}
             }
-            // 确认打卡已开启
-            val cfg = readWpsFile("/data/user/0/com.wps.koa/files/wps-miuix-checkin.txt")
-            if (cfg.isNullOrEmpty()) return@Thread
-            val lines = cfg.lines()
-            if (lines.isEmpty() || lines[0].trim() != "true") return@Thread
-
-            // 调用 CheckinWorker 的 schedule 模式派发轮询定时器（脚本在 dex 内，无转义问题）
-            ProcessBuilder("su", "-c",
-                "CLASSPATH=/data/local/tmp/CheckinWorker.dex app_process / CheckinWorker schedule").start().waitFor()
+            // 方案 B：su + sh -c + base64（兼容无 context 场景）
+            if (!deployed) {
+                try {
+                    val encoded = android.util.Base64.encodeToString(script.toByteArray(), android.util.Base64.NO_WRAP)
+                    val cmd = "sh -c 'echo $encoded | base64 -d > $targetPath && chmod 755 $targetPath'"
+                    val p = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
+                    p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+                    deployed = true
+                } catch (_: Exception) {}
+            }
+            if (!deployed) return@Thread
+            // 执行调度脚本
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "sh $targetPath"))
+            p.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)
+            p.destroyForcibly()
         } catch (_: Exception) {}
     }.apply { isDaemon = true; name = "wyu-root-scheduler" }.start()
 }
@@ -69,15 +101,17 @@ fun isRootTimerAlive(): Boolean {
         val pid = readWpsFile("/data/user/0/com.wps.koa/files/wps-checkin-timer.pid")?.trim()
         if (pid.isNullOrEmpty()) return false
         val p = ProcessBuilder("su", "-c", "kill -0 $pid 2>/dev/null").start()
-        p.waitFor() == 0
+        p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
     } catch (_: Exception) { false }
 }
 
 // 模块 app 用 su 读取 WPS 私有目录文件
 fun readWpsFile(path: String): String? {
     return try {
-        val p = ProcessBuilder("su", "-c", "cat $path").start()
-        p.inputStream.bufferedReader().readText().takeIf { it.isNotBlank() }
+        val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "cat $path"))
+        val result = p.inputStream.bufferedReader().readText()
+        p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+        result.takeIf { it.isNotBlank() }
     } catch (_: Exception) { null }
 }
 
@@ -93,7 +127,7 @@ private fun deployFiles(ctx: android.content.Context) {
             ctx.assets.open("CheckinWorker.dex").use { input ->
                 FileOutputStream(tmpDex).use { output -> input.copyTo(output) }
             }
-            ProcessBuilder("su", "-c", "cp ${tmpDex.absolutePath} /data/local/tmp/CheckinWorker.dex && chmod 666 /data/local/tmp/CheckinWorker.dex").start().waitFor()
+            ProcessBuilder("su", "-c", "cp ${tmpDex.absolutePath} /data/local/tmp/CheckinWorker.dex && chmod 666 /data/local/tmp/CheckinWorker.dex").start().waitFor(10, java.util.concurrent.TimeUnit.SECONDS)
             tmpDex.delete()
         }
     } catch (_: Exception) {}

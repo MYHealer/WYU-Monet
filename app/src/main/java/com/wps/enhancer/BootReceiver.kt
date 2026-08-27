@@ -26,16 +26,18 @@ class BootReceiver : BroadcastReceiver() {
                 }
                 if (!suReady) return@Thread
 
-                // 部署 CheckinWorker.dex（从模块 APK assets 复制到 /data/local/tmp/，确保文件存在且有效）
+                // 部署 CheckinWorker.dex（从模块 APK assets 复制到 /data/local/tmp/，用 su cp 绕过 SELinux）
                 try {
-                    val target = File("/data/local/tmp/CheckinWorker.dex")
-                    val needDeploy = !target.exists() || target.length() < 8000
-                    if (needDeploy) {
+                    val checkP = ProcessBuilder("su", "-c", "stat -c %s /data/local/tmp/CheckinWorker.dex 2>/dev/null").start()
+                    val sz = checkP.inputStream.bufferedReader().readText().trim().toLongOrNull() ?: 0L
+                    checkP.waitFor()
+                    if (sz < 8000) {
+                        val tmpDex = File(context.cacheDir, "CheckinWorker.dex")
                         context.assets.open("CheckinWorker.dex").use { input ->
-                            FileOutputStream(target).use { output -> input.copyTo(output) }
+                            FileOutputStream(tmpDex).use { output -> input.copyTo(output) }
                         }
-                        // 设置权限让 app_process 能读取
-                        ProcessBuilder("su", "-c", "chmod 666 /data/local/tmp/CheckinWorker.dex").start().waitFor()
+                        ProcessBuilder("su", "-c", "cp ${tmpDex.absolutePath} /data/local/tmp/CheckinWorker.dex && chmod 666 /data/local/tmp/CheckinWorker.dex").start().waitFor()
+                        tmpDex.delete()
                     }
                 } catch (_: Exception) {}
 
@@ -56,7 +58,7 @@ class BootReceiver : BroadcastReceiver() {
                 } catch (_: Exception) {}
 
                 // 派发 root 定时器
-                scheduleRootCheckin()
+                scheduleRootCheckin(context)
             }.apply { isDaemon = true; name = "wyu-boot-scheduler" }.start()
         }
     }
