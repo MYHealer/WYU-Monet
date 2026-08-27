@@ -30,9 +30,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // 预创建 WPS 进程需要写入的文件（chmod 666 让不同 UID 可读写）
-        Thread { deployFiles(assets) }.start()
-                // 派发 root 脱离式定时器（模块 app 有 root；nohup 后台 shell 即使模块 app 被杀也能到点执行）
-        scheduleRootCheckin()
+        Thread {
+            deployFiles(this)
+            scheduleRootCheckin()
+        }.apply { isDaemon = true; name = "wyu-init" }.start()
         setContent {
             MiuixTheme {
                 MainScreen()
@@ -80,15 +81,20 @@ fun readWpsFile(path: String): String? {
     } catch (_: Exception) { null }
 }
 
-private fun deployFiles(assets: android.content.res.AssetManager) {
+private fun deployFiles(ctx: android.content.Context) {
     // 部署 CheckinWorker.dex（BootReceiver 只在开机触发，app 内也要部署）
     try {
-        val target = File("/data/local/tmp/CheckinWorker.dex")
-        if (!target.exists() || target.length() < 8000) {
-            assets.open("CheckinWorker.dex").use { input ->
-                FileOutputStream(target).use { output -> input.copyTo(output) }
+        val checkResult = ProcessBuilder("su", "-c", "stat -c %s /data/local/tmp/CheckinWorker.dex 2>/dev/null").start()
+        val sizeStr = checkResult.inputStream.bufferedReader().readText().trim()
+        checkResult.waitFor()
+        val size = sizeStr.toLongOrNull() ?: 0L
+        if (size < 8000) {
+            val tmpDex = File(ctx.cacheDir, "CheckinWorker.dex")
+            ctx.assets.open("CheckinWorker.dex").use { input ->
+                FileOutputStream(tmpDex).use { output -> input.copyTo(output) }
             }
-            ProcessBuilder("su", "-c", "chmod 666 /data/local/tmp/CheckinWorker.dex").start().waitFor()
+            ProcessBuilder("su", "-c", "cp ${tmpDex.absolutePath} /data/local/tmp/CheckinWorker.dex && chmod 666 /data/local/tmp/CheckinWorker.dex").start().waitFor()
+            tmpDex.delete()
         }
     } catch (_: Exception) {}
     // 预创建 flag 文件
