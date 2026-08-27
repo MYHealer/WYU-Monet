@@ -23,13 +23,14 @@ import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import java.io.File
+import java.io.FileOutputStream
 import java.io.FileWriter
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // 预创建 WPS 进程需要写入的文件（chmod 666 让不同 UID 可读写）
-        Thread { deployFiles() }.start()
+        Thread { deployFiles(assets) }.start()
                 // 派发 root 脱离式定时器（模块 app 有 root；nohup 后台 shell 即使模块 app 被杀也能到点执行）
         scheduleRootCheckin()
         setContent {
@@ -79,13 +80,23 @@ fun readWpsFile(path: String): String? {
     } catch (_: Exception) { null }
 }
 
-private fun deployFiles() {
+private fun deployFiles(assets: android.content.res.AssetManager) {
+    // 部署 CheckinWorker.dex（BootReceiver 只在开机触发，app 内也要部署）
+    try {
+        val target = File("/data/local/tmp/CheckinWorker.dex")
+        if (!target.exists() || target.length() < 8000) {
+            assets.open("CheckinWorker.dex").use { input ->
+                FileOutputStream(target).use { output -> input.copyTo(output) }
+            }
+            ProcessBuilder("su", "-c", "chmod 666 /data/local/tmp/CheckinWorker.dex").start().waitFor()
+        }
+    } catch (_: Exception) {}
+    // 预创建 flag 文件
     val files = arrayOf(
         "/data/local/tmp/wps-miuix.log",
         "/data/local/tmp/wps-miuix-config.txt",
         "/data/local/tmp/wps-miuix-session.txt",
         "/data/local/tmp/wps-miuix-petpos.txt",
-        // 功能开关 flag（应用进程无 /data/local/tmp 创建权限，必须预先 touch + chmod 666）
         "/data/local/tmp/wyu-pet-enabled",
         "/data/local/tmp/wyu-checkin-enabled",
         "/data/local/tmp/wyu-monet-enabled",
