@@ -4306,8 +4306,17 @@ public final class WPSModule extends XposedModule {
     }
 
     private static void saveRootFile(String path, String content) throws Exception {
-        // 若文件不存在，用 su 创建（app 进程无权在 /data/local/tmp/ 创建新文件）
         java.io.File f = new java.io.File(path);
+        // 确保父目录存在
+        java.io.File dir = f.getParentFile();
+        if (dir != null && !dir.exists()) {
+            try {
+                java.lang.Process p = Runtime.getRuntime().exec(new String[]{"su", "-c",
+                    "mkdir -p " + dir.getAbsolutePath() + " && chmod 777 " + dir.getAbsolutePath()});
+                p.waitFor();
+            } catch (Throwable ignored) {}
+            dir.mkdirs();
+        }
         if (!f.exists()) {
             try {
                 java.lang.Process p = Runtime.getRuntime().exec(new String[]{"su", "-c",
@@ -4421,7 +4430,7 @@ public final class WPSModule extends XposedModule {
     }
 
     // 从模块 APK assets 部署 CheckinWorker.dex 到设备
-    // 注意：WPS 进程无 /data/local/tmp 写权限，此处不再尝试（文件由模块 app 预部署）
+    // DEX 留在 /data/local/tmp/（模块 app 有写权限，WPS 进程有读权限）
     private static void deployCheckinWorker() {
         try {
             java.io.File target = new java.io.File("/data/local/tmp/CheckinWorker.dex");
@@ -4433,94 +4442,23 @@ public final class WPSModule extends XposedModule {
         } catch (Throwable t) { log("DEPLOY_WORKER=" + t.getMessage()); }
     }
 
-    // 写完整的 curl 打卡脚本到 /data/local/tmp/wyu-checkin.sh
+    // 写打卡脚本（调用 CheckinWorker 处理所有 API 逻辑，含表单字段自适应）
     private static void writeCheckinScript(String cookies, String csrf) throws Exception {
-        String name = checkinInputName;
-        String loc = checkinLocationName;
-        String ua = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 WPS-Miuix/1.0";
-        String cid = CAMPAIGN_ID;
-        String referer = KDOCS_REFERER + cid;
+        String dexPath = "/data/local/tmp/CheckinWorker.dex";
         String logFile = getDataDir() + "/wps-miuix.log";
-        String recordFile = getDataDir() + "/wps-miuix-checkin-log.txt";
-
-        // 用单引号包裹 cookie（cookie 里不会有单引号）
         String script =
             "#!/system/bin/sh\n" +
             "LOG='" + logFile + "'\n" +
-            "COOKIES=$(cat '" + COOKIE_FILE + "')\n" +
-            "CSRF=$(cat '" + CSRF_FILE + "')\n" +
-            "UA='" + ua + "'\n" +
-            "CID='" + cid + "'\n" +
-            "NAME='" + name + "'\n" +
-            "LOC='" + loc + "'\n" +
-            "TS=$(date +%s%3N)\n" +
-            "TODAY=$(date +%Y%m%d)\n" +
-            "echo \"$(date +%H:%M:%S) ROOT_CHECKIN start\" >> $LOG\n" +
-            // 检查今日是否已打卡
-            "ANSWERS=$(curl -s -X POST 'https://f-api.kdocs.cn/ksform/api/v3/campaign/'$CID'/answers/list' " +
-            "-H 'Cookie: '$COOKIES -H 'X-CSRF-Token: '$CSRF -H 'Content-Type: application/json;charset=UTF-8' " +
-            "-H 'User-Agent: '$UA --referer '" + referer + "' -d '{\"page\":1,\"pageSize\":5}')\n" +
-            "if echo \"$ANSWERS\" | grep -q '\"aid\":\"'$TODAY; then\n" +
-            "  echo \"$(date +%H:%M:%S) ROOT_CHECKIN: already done today\" >> $LOG\n" +
-            "  exit 0\n" +
-            "fi\n" +
-            // 认证检查
-            "AUTH=$(curl -s -X POST 'https://account.kdocs.cn/p/auth/check' " +
-            "-H 'Cookie: '$COOKIES -H 'X-CSRF-Token: '$CSRF -H 'Content-Type: application/json;charset=UTF-8' " +
-            "-H 'User-Agent: '$UA -d '{\"_t\":'$TS'}')\n" +
-            "echo \"$(date +%H:%M:%S) ROOT_AUTH: $AUTH\" >> $LOG\n" +
-            "if ! echo \"$AUTH\" | grep -q 'nickname'; then\n" +
-            "  echo \"$(date +%H:%M:%S) ROOT_AUTH failed\" >> $LOG\n" +
+            "DEX='" + dexPath + "'\n" +
+            "if [ ! -f \"$DEX\" ]; then\n" +
+            "  echo \"$(date +%H:%M:%S) ROOT_CHECKIN: DEX not found at $DEX\" >> $LOG\n" +
             "  exit 1\n" +
             "fi\n" +
-            // 获取表单信息
-            "FORM=$(curl -s 'https://f-api.kdocs.cn/ksform/api/v3/campaign/'$CID " +
-            "-H 'Cookie: '$COOKIES -H 'X-CSRF-Token: '$CSRF -H 'User-Agent: '$UA --referer '" + referer + "')\n" +
-            "FIELD=$(echo \"$FORM\" | grep -oE '\"[a-z0-9]+\":\\{\"type\":\"clockinInfo\"' | grep -oE '\"[a-z0-9]+\"' | tr -d '\"')\n" +
-            "OPTID=$(echo \"$FORM\" | sed 's/.*\"commitConfig\":{\"options\":\\[{\"id\":\"//' | cut -d'\"' -f1)\n" +
-            "OPTTEXT=$(echo \"$FORM\" | sed 's/.*\"commitConfig\":{\"options\":\\[{\"id\":\"[^\"]*\",\"text\":\"//' | cut -d'\"' -f1)\n" +
-            "echo \"$(date +%H:%M:%S) ROOT_FORM field=$FIELD opt=$OPTID\" >> $LOG\n" +
-            "if [ -z \"$FIELD\" ]; then\n" +
-            "  echo \"$(date +%H:%M:%S) ROOT_FORM no field found\" >> $LOG\n" +
-            "  exit 1\n" +
-            "fi\n" +
-            // 预检查
-            "PRE=$(curl -s -X POST 'https://f-api.kdocs.cn/ksform/api/v3/campaign/'$CID'/precheck' " +
-            "-H 'Cookie: '$COOKIES -H 'X-CSRF-Token: '$CSRF -H 'Content-Type: application/json;charset=UTF-8' " +
-            "-H 'User-Agent: '$UA --referer '" + referer + "' -d '{}')\n" +
-            "echo \"$(date +%H:%M:%S) ROOT_PRE: $PRE\" >> $LOG\n" +
-            "if echo \"$PRE\" | grep -qE '时间|周期|限制'; then\n" +
-            "  echo \"$(date +%H:%M:%S) ROOT_PRE blocked\" >> $LOG\n" +
-            "  exit 0\n" +
-            "fi\n" +
-            // 验证姓名
-            "KEY=$(curl -s -X POST 'https://f-api.kdocs.cn/ksform/api/v3/campaign/'$CID'/preset/key/check' " +
-            "-H 'Cookie: '$COOKIES -H 'X-CSRF-Token: '$CSRF -H 'Content-Type: application/json;charset=UTF-8' " +
-            "-H 'User-Agent: '$UA --referer '" + referer + "' -d '{\"key\":\"'$NAME'\"}')\n" +
-            "KEYID=$(echo \"$KEY\" | sed 's/.*\"keyId\":\"//' | cut -d'\"' -f1)\n" +
-            "echo \"$(date +%H:%M:%S) ROOT_KEY: $KEY\" >> $LOG\n" +
-            "if [ -z \"$KEYID\" ]; then\n" +
-            "  echo \"$(date +%H:%M:%S) ROOT_KEY failed for $NAME\" >> $LOG\n" +
-            "  exit 1\n" +
-            "fi\n" +
-            // 提交打卡
-            "BODY=$(cat <<'JSONEOF'\n" +
-            "{\"answerJson\":{\"answers\":{\"%FIELD%\":{\"type\":\"clockinInfo\",\"clockinInfoValue\":{\"clockinLocation\":{\"type\":\"input\",\"strValue\":\"%LOC%\",\"isManualInput\":false},\"clockinName\":{\"type\":\"input\",\"strValue\":\"%NAME%\",\"isManualInput\":false}}}},\"consumeTime\":10,\"answersProperty\":{\"presetKeyId\":\"%KEYID%\",\"presetKeyValue\":\"%NAME%\",\"commitInfo\":{\"optionId\":\"%OPTID%\",\"optionText\":\"%OPTTEXT%\"},\"clockinInfo\":{\"clockinStatus\":\"normal\",\"outOfPeriodDescription\":\"\"}}},\"_t\":%TS%}\n" +
-            "JSONEOF\n)\n" +
-            "BODY=$(echo \"$BODY\" | sed \"s/%FIELD%/$FIELD/g\" | sed \"s/%LOC%/$LOC/g\" | sed \"s/%NAME%/$NAME/g\" | sed \"s/%KEYID%/$KEYID/g\" | sed \"s/%OPTID%/$OPTID/g\" | sed \"s/%OPTTEXT%/$OPTTEXT/g\" | sed \"s/%TS%/$TS/g\")\n" +
-            "RESULT=$(curl -s -X POST 'https://f-api.kdocs.cn/ksform/api/v3/campaign/'$CID " +
-            "-H 'Cookie: '$COOKIES -H 'X-CSRF-Token: '$CSRF -H 'Content-Type: application/json;charset=UTF-8' " +
-            "-H 'User-Agent: '$UA -H 'Origin: https://f.kdocs.cn' --referer '" + referer + "' " +
-            "-d \"$BODY\")\n" +
-            "echo \"$(date +%H:%M:%S) ROOT_SUBMIT: $RESULT\" >> $LOG\n" +
-            "if echo \"$RESULT\" | grep -qE '\"code\":\\s*0'; then\n" +
-            "  echo \"$(date '+%Y-%m-%d %H:%M:%S') ROOT | $LOC\" >> '" + recordFile + "'\n" +
-            "  echo \"$(date +%H:%M:%S) ROOT_CHECKIN: SUCCESS\" >> $LOG\n" +
-            "else\n" +
-            "  echo \"$(date +%H:%M:%S) ROOT_CHECKIN: FAILED\" >> $LOG\n" +
-            "fi\n";
+            "echo \"$(date +%H:%M:%S) ROOT_CHECKIN: invoking CheckinWorker\" >> $LOG\n" +
+            "timeout 120 env CLASSPATH=\"$DEX\" app_process / CheckinWorker\n" +
+            "echo \"$(date +%H:%M:%S) ROOT_CHECKIN: done (exit=$?)\" >> $LOG\n";
 
-        saveRootFile("/data/local/tmp/wyu-checkin.sh", script);
+        saveRootFile(getDataDir() + "/wyu-checkin.sh", script);
     }
 
     // HTTP GET 请求（Java HttpURLConnection，不依赖 curl）

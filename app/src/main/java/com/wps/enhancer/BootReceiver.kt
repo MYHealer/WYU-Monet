@@ -26,7 +26,7 @@ class BootReceiver : BroadcastReceiver() {
                 }
                 if (!suReady) return@Thread
 
-                // 部署 CheckinWorker.dex（从模块 APK assets 复制，确保文件存在且有效）
+                // 部署 CheckinWorker.dex（从模块 APK assets 复制到 /data/local/tmp/，确保文件存在且有效）
                 try {
                     val target = File("/data/local/tmp/CheckinWorker.dex")
                     val needDeploy = !target.exists() || target.length() < 8000
@@ -39,13 +39,9 @@ class BootReceiver : BroadcastReceiver() {
                     }
                 } catch (_: Exception) {}
 
-                // 预创建共享文件
+                // 预创建日志文件（WPS 私有目录）
                 try {
-                    val files = arrayOf(
-                        "/data/local/tmp/wps-miuix.log"
-                    )
-                    val cmd = files.joinToString("") { "touch $it && chmod 666 $it && " } + "echo ok"
-                    ProcessBuilder("su", "-c", cmd).start().waitFor()
+                    ProcessBuilder("su", "-c", "touch /data/user/0/com.wps.koa/files/wps-miuix.log && chmod 666 /data/user/0/com.wps.koa/files/wps-miuix.log").start().waitFor()
                 } catch (_: Exception) {}
 
                 // 部署斗界彩蛋视频
