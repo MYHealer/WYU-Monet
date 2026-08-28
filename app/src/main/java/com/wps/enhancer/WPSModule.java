@@ -2625,6 +2625,8 @@ public final class WPSModule extends XposedModule {
             sb.append(checkinClockinValues).append("\n");
             allowRootAccess = true;
             saveRootFile(CHECKIN_FILE, sb.toString());
+            // 同时写一份到 /data/local/tmp/（模块 app 的 su 受 SELinux 限制无法读 WPS 私有目录）
+            saveRootFile("/data/local/tmp/wps-miuix-checkin.txt", sb.toString());
             allowRootAccess = false;
             log("CHECKIN_SAVED");
             // 保存后自动重新注册定时器
@@ -4635,38 +4637,17 @@ public final class WPSModule extends XposedModule {
         try {
             if (appContext == null) { log("SCHEDULE no context"); return; }
 
-            java.util.Calendar cal = java.util.Calendar.getInstance();
-            cal.set(java.util.Calendar.HOUR_OF_DAY, checkinHour);
-            cal.set(java.util.Calendar.MINUTE, checkinMinute);
-            cal.set(java.util.Calendar.SECOND, 0);
-            if (cal.getTimeInMillis() <= System.currentTimeMillis()) {
-                cal.add(java.util.Calendar.DAY_OF_YEAR, 1);
-            }
-            if (checkinWeekly) {
-                while (cal.get(java.util.Calendar.DAY_OF_WEEK) != java.util.Calendar.MONDAY) {
-                    cal.add(java.util.Calendar.DAY_OF_YEAR, 1);
-                }
-            }
-
-            // 用 AlarmManager 定时（不需要 root）
+            // 跨进程启动模块 app 的 Service 来设闹钟（WPS 进程无闹钟权限）
             try {
-                android.app.AlarmManager am = (android.app.AlarmManager) appContext.getSystemService(Context.ALARM_SERVICE);
-                Intent intent = new Intent("com.wps.enhancer.CHECKIN_ACTION");
-                intent.setPackage(appContext.getPackageName());
-                android.app.PendingIntent pi = android.app.PendingIntent.getBroadcast(
-                    appContext, 0, intent,
-                    android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
-                try {
-                    // Android 12+ 需要 SCHEDULE_EXACT_ALARM 权限，可能失败
-                    am.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, cal.getTimeInMillis(), pi);
-                    log("SCHEDULE exact at " + cal.getTime());
-                } catch (SecurityException e) {
-                    // 无精确闹钟权限，降级 setAlarmClock（无需权限、精确）
-                    am.setAlarmClock(new android.app.AlarmManager.AlarmClockInfo(cal.getTimeInMillis(), null), pi);
-                    log("SCHEDULE via AlarmClock at " + cal.getTime());
-                }
+                Intent intent = new Intent();
+                intent.setComponent(new android.content.ComponentName("com.wps.enhancer", "com.wps.enhancer.ScheduleService"));
+                intent.putExtra("hour", checkinHour);
+                intent.putExtra("minute", checkinMinute);
+                intent.putExtra("weekly", checkinWeekly);
+                appContext.startService(intent);
+                log("SCHEDULE service started hour=" + checkinHour + " min=" + checkinMinute);
             } catch (Throwable t) {
-                log("SCHEDULE alarm failed: " + t.getMessage());
+                log("SCHEDULE service failed: " + t.getMessage());
             }
         } catch (Throwable t) { log("SCHEDULE=" + t.getMessage()); }
     }
@@ -4676,7 +4657,7 @@ public final class WPSModule extends XposedModule {
             if (appContext == null) return;
             android.app.AlarmManager am = (android.app.AlarmManager) appContext.getSystemService(Context.ALARM_SERVICE);
             Intent intent = new Intent("com.wps.enhancer.CHECKIN_ACTION");
-            intent.setPackage(appContext.getPackageName());
+            intent.setPackage("com.wps.enhancer");
             android.app.PendingIntent pi = android.app.PendingIntent.getBroadcast(
                 appContext, 0, intent,
                 android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
@@ -5083,65 +5064,105 @@ public final class WPSModule extends XposedModule {
         } catch (Throwable t) { log("CHECKIN_DIALOG=" + t.getMessage()); }
     }
 
-    // 广播接收器：接收定时打卡触发
+    // 广播接收器：接收定时打卡触发（运行在模块 app 进程，有 su 权限）
+    // 注意：此 receiver 运行在 com.wps.enhancer 进程，WPSModule 类未加载
+    // 不能调用 log()、不能引用 WPSModule 静态字段
     public static class CheckinReceiver extends android.content.BroadcastReceiver {
         @Override
         public void onReceive(Context context, android.content.Intent intent) {
-            log("CHECKIN_TRIGGERED ctx=" + (appContext != null));
-            if (!checkinEnabled) return;
+            android.util.Log.d("[WYU]", "CHECKIN_TRIGGERED");
+            // 读取配置检查是否启用
+            try {
+                File cfgFile = new File("/data/local/tmp/wps-miuix-checkin.txt");
+                if (!cfgFile.exists()) { android.util.Log.d("[WYU]", "CHECKIN: no config"); return; }
+                BufferedReader br = new BufferedReader(new java.io.FileReader(cfgFile));
+                String firstLine = br.readLine();
+                br.close();
+                if (firstLine == null || !"true".equals(firstLine.trim())) {
+                    android.util.Log.d("[WYU]", "CHECKIN: disabled"); return;
+                }
+            } catch (Throwable t) { android.util.Log.e("[WYU]", "CHECKIN: config read error", t); return; }
 
-            if (appContext != null) {
-                // WPS 进程活着，直接打卡
-                new Thread(() -> doCheckin()).start();
-            } else {
-                // WPS 进程不可用（无法在此进程内重启，等待下次 WPS 启动触发）
-                log("CHECKIN: appContext null, skip (wait for next WPS launch)");
-            }
-
-            // 5分钟后重试检查
+            // 用 su 启动 CheckinWorker（模块 app 进程有 root 权限）
             new Thread(() -> {
-                try { Thread.sleep(5 * 60 * 1000); } catch (InterruptedException e) { return; }
-                if (!checkinEnabled) return;
                 try {
-                    File logFile = new File(CHECKIN_LOG_FILE);
-                    if (logFile.exists()) {
-                        BufferedReader br = new BufferedReader(new java.io.FileReader(logFile));
-                        String lastLine = null, line;
-                        while ((line = br.readLine()) != null) lastLine = line;
-                        br.close();
-                        if (lastLine != null) {
-                            java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.CHINA);
-                            String nowPrefix = sdf.format(new java.util.Date());
-                            if (!lastLine.startsWith(nowPrefix.substring(0, 13))) {
-                                log("CHECKIN_RETRY: no recent record, retrying");
-                                doCheckin();
-                            }
-                        }
-                    } else {
-                        log("CHECKIN_RETRY: no log file, retrying");
-                        doCheckin();
-                    }
-                } catch (Throwable t) { log("CHECKIN_RETRY=" + t.getMessage()); }
-            }).start();
+                    android.util.Log.d("[WYU]", "CHECKIN: starting CheckinWorker via su");
+                    Process p = new ProcessBuilder("su", "-c",
+                        "CLASSPATH=/data/local/tmp/CheckinWorker.dex app_process / CheckinWorker").start();
+                    int exit = p.waitFor();
+                    android.util.Log.d("[WYU]", "CHECKIN: CheckinWorker exit=" + exit);
+                } catch (Throwable t) {
+                    android.util.Log.e("[WYU]", "CHECKIN: su failed=" + t.getMessage());
+                }
+            }, "wyu-checkin-trigger").start();
 
-            // 重新调度下一次
-            scheduleCheckin(null);
+            // 重新调度下一次闹钟（从配置文件读取时间）
+            rescheduleFromConfig(context);
+        }
+
+        private static void rescheduleFromConfig(Context ctx) {
+            try {
+                File cfgFile = new File("/data/local/tmp/wps-miuix-checkin.txt");
+                if (!cfgFile.exists()) return;
+                String[] lines = new String[0];
+                try (BufferedReader br = new BufferedReader(new java.io.FileReader(cfgFile))) {
+                    java.util.List<String> all = new java.util.ArrayList<>();
+                    String line;
+                    while ((line = br.readLine()) != null) all.add(line);
+                    lines = all.toArray(new String[0]);
+                }
+                if (lines.length < 3 || !"true".equals(lines[0].trim())) return;
+                int hour = Integer.parseInt(lines[1].trim());
+                int minute = Integer.parseInt(lines[2].trim());
+                java.util.Calendar cal = java.util.Calendar.getInstance();
+                cal.set(java.util.Calendar.HOUR_OF_DAY, hour);
+                cal.set(java.util.Calendar.MINUTE, minute);
+                cal.set(java.util.Calendar.SECOND, 0);
+                if (cal.getTimeInMillis() <= System.currentTimeMillis()) {
+                    cal.add(java.util.Calendar.DAY_OF_YEAR, 1);
+                }
+                android.app.AlarmManager am = (android.app.AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
+                Intent checkIntent = new Intent("com.wps.enhancer.CHECKIN_ACTION");
+                checkIntent.setPackage("com.wps.enhancer");
+                android.app.PendingIntent pi = android.app.PendingIntent.getBroadcast(
+                    ctx, 0, checkIntent,
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
+                am.setAlarmClock(new android.app.AlarmManager.AlarmClockInfo(cal.getTimeInMillis(), null), pi);
+                android.util.Log.d("[WYU]", "CHECKIN: rescheduled to " + cal.getTime());
+            } catch (Throwable t) {
+                android.util.Log.e("[WYU]", "CHECKIN: reschedule failed: " + t.getMessage());
+            }
         }
     }
 
-    // 静默打卡 Service：am startservice 启动，无 UI，直接调 API
+    // 静默打卡 Service：运行在模块 app 进程，不依赖 WPSModule 静态字段
     public static class CheckinService extends android.app.Service {
         @Override
         public int onStartCommand(android.content.Intent intent, int flags, int startId) {
-            log("CHECKIN_SERVICE triggered");
-            if (!checkinEnabled) { stopSelf(); return START_NOT_STICKY; }
+            android.util.Log.d("[WYU]", "CHECKIN_SERVICE triggered");
+            // 从配置文件读取状态（不依赖 WPSModule.checkinEnabled）
+            boolean enabled = false;
+            try {
+                File cfgFile = new File("/data/local/tmp/wps-miuix-checkin.txt");
+                if (cfgFile.exists()) {
+                    BufferedReader br = new BufferedReader(new java.io.FileReader(cfgFile));
+                    String firstLine = br.readLine();
+                    br.close();
+                    enabled = "true".equals(firstLine != null ? firstLine.trim() : "");
+                }
+            } catch (Throwable ignored) {}
+            if (!enabled) { stopSelf(); return START_NOT_STICKY; }
+
             new Thread(() -> {
                 try {
-                    // 等模块初始化完成（appContext 可能还没设好）
-                    for (int i = 0; i < 20 && appContext == null; i++) Thread.sleep(500);
-                    if (appContext == null) { log("CHECKIN_SERVICE: no context"); stopSelf(); return; }
-                    doCheckin();
-                } catch (Throwable t) { log("CHECKIN_SERVICE=" + t.getMessage()); }
+                    android.util.Log.d("[WYU]", "CHECKIN_SERVICE: starting CheckinWorker via su");
+                    Process p = new ProcessBuilder("su", "-c",
+                        "CLASSPATH=/data/local/tmp/CheckinWorker.dex app_process / CheckinWorker").start();
+                    int exit = p.waitFor();
+                    android.util.Log.d("[WYU]", "CHECKIN_SERVICE: CheckinWorker exit=" + exit);
+                } catch (Throwable t) {
+                    android.util.Log.e("[WYU]", "CHECKIN_SERVICE: su failed=" + t.getMessage());
+                }
                 finally { stopSelf(); }
             }).start();
             return START_NOT_STICKY;

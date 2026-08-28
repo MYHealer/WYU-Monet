@@ -29,11 +29,9 @@ import java.io.FileWriter
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 预创建 WPS 进程需要写入的文件（chmod 666 让不同 UID 可读写）
-        Thread {
-            try { deployFiles(this) } catch (_: Exception) {}
-            try { scheduleRootCheckin(this) } catch (_: Exception) {}
-        }.apply { isDaemon = true; name = "wyu-init" }.start()
+        Thread { deployFiles(this) }.start()
+        scheduleRootCheckin()
+        startConfigWatcher(this)
         setContent {
             MiuixTheme {
                 MainScreen()
@@ -42,87 +40,48 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// 模块 app（有 root）派发 root 常驻轮询定时器
-fun scheduleRootCheckin(ctx: android.content.Context? = null) {
+fun scheduleRootCheckin() {
     Thread {
         try {
-            // 防重复：已有 root 定时器在跑则跳过
             if (isRootTimerAlive()) return@Thread
-            // 写调度脚本——先写到 cacheDir（app 有权限），再 su cp 到 /data/local/tmp/
-            val dataDir = "/data/user/0/com.wps.koa/files"
-            val script =
-                "#!/system/bin/sh\n" +
-                "CFG=\"$dataDir/wps-miuix-checkin.txt\"\n" +
-                "PIDF=\"$dataDir/wps-checkin-timer.pid\"\n" +
-                "if [ ! -f \"\$CFG\" ]; then exit 0; fi\n" +
-                "ENABLED=\$(sed -n '1p' \"\$CFG\" | tr -d ' ')\n" +
-                "if [ \"\$ENABLED\" != \"true\" ]; then exit 0; fi\n" +
-                "if [ -f \"\$PIDF\" ]; then\n" +
-                "  OLD=\$(cat \"\$PIDF\")\n" +
-                "  if [ -n \"\$OLD\" ] && kill -0 \"\$OLD\" 2>/dev/null; then exit 0; fi\n" +
-                "fi\n" +
-                "CLASSPATH=/data/local/tmp/CheckinWorker.dex app_process / CheckinWorker schedule\n"
-            val targetPath = "/data/local/tmp/wyu-schedule.sh"
-            // 方案 A：先写 cacheDir，su cp 部署
-            var deployed = false
-            if (ctx != null) {
-                try {
-                    val tmpScript = java.io.File(ctx.cacheDir, "wyu-schedule.sh")
-                    tmpScript.writeText(script)
-                    tmpScript.setExecutable(true)
-                    val cp = Runtime.getRuntime().exec(arrayOf("su", "-c",
-                        "cp ${tmpScript.absolutePath} $targetPath && chmod 755 $targetPath"))
-                    if (cp.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) deployed = true
-                    tmpScript.delete()
-                } catch (_: Exception) {}
-            }
-            // 方案 B：su + sh -c + base64（兼容无 context 场景）
-            if (!deployed) {
-                try {
-                    val encoded = android.util.Base64.encodeToString(script.toByteArray(), android.util.Base64.NO_WRAP)
-                    val cmd = "sh -c 'echo $encoded | base64 -d > $targetPath && chmod 755 $targetPath'"
-                    val p = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
-                    p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
-                    deployed = true
-                } catch (_: Exception) {}
-            }
-            if (!deployed) return@Thread
-            // 执行调度脚本
-            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "sh $targetPath"))
-            p.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)
-            p.destroyForcibly()
+            // 读 /data/local/tmp/ 的配置副本（WPS 私有目录受 SELinux 限制不可读）
+            val cfg = readLocalTmpFile("/data/local/tmp/wps-miuix-checkin.txt")
+            if (cfg.isNullOrEmpty()) return@Thread
+            val lines = cfg.lines()
+            if (lines.isEmpty() || lines[0].trim() != "true") return@Thread
+            ProcessBuilder("su", "-c",
+                "CLASSPATH=/data/local/tmp/CheckinWorker.dex app_process / CheckinWorker schedule").start().waitFor()
         } catch (_: Exception) {}
     }.apply { isDaemon = true; name = "wyu-root-scheduler" }.start()
 }
 
-// 检查 root 定时器是否存活（读 PID 文件，su kill -0 探测）
 fun isRootTimerAlive(): Boolean {
     return try {
-        val pid = readWpsFile("/data/user/0/com.wps.koa/files/wps-checkin-timer.pid")?.trim()
+        val pid = readLocalTmpFile("/data/local/tmp/wps-checkin-timer.pid")?.trim()
         if (pid.isNullOrEmpty()) return false
         val p = ProcessBuilder("su", "-c", "kill -0 $pid 2>/dev/null").start()
-        p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+        p.waitFor() == 0
     } catch (_: Exception) { false }
 }
 
-// 模块 app 用 su 读取 WPS 私有目录文件
-fun readWpsFile(path: String): String? {
+// 读 /data/local/tmp/ 下的文件（app 进程有权限）
+private fun readLocalTmpFile(path: String): String? {
     return try {
-        val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "cat $path"))
-        val result = p.inputStream.bufferedReader().readText()
-        p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
-        result.takeIf { it.isNotBlank() }
+        val f = File(path)
+        if (!f.exists()) return null
+        f.readText().takeIf { it.isNotBlank() }
     } catch (_: Exception) { null }
 }
 
 private fun deployFiles(ctx: android.content.Context) {
-    // 部署 CheckinWorker.dex（BootReceiver 只在开机触发，app 内也要部署）
+    // 部署 CheckinWorker.dex（每次启动都检查，确保版本一致）
     try {
+        val assetSize = ctx.assets.open("CheckinWorker.dex").use { it.available().toLong() }
         val checkResult = ProcessBuilder("su", "-c", "stat -c %s /data/local/tmp/CheckinWorker.dex 2>/dev/null").start()
         val sizeStr = checkResult.inputStream.bufferedReader().readText().trim()
         checkResult.waitFor()
-        val size = sizeStr.toLongOrNull() ?: 0L
-        if (size < 8000) {
+        val deviceSize = sizeStr.toLongOrNull() ?: 0L
+        if (deviceSize != assetSize) {
             val tmpDex = File(ctx.cacheDir, "CheckinWorker.dex")
             ctx.assets.open("CheckinWorker.dex").use { input ->
                 FileOutputStream(tmpDex).use { output -> input.copyTo(output) }
@@ -137,6 +96,7 @@ private fun deployFiles(ctx: android.content.Context) {
         "/data/local/tmp/wps-miuix-config.txt",
         "/data/local/tmp/wps-miuix-session.txt",
         "/data/local/tmp/wps-miuix-petpos.txt",
+        "/data/local/tmp/wps-miuix-checkin.txt",
         "/data/local/tmp/wyu-pet-enabled",
         "/data/local/tmp/wyu-checkin-enabled",
         "/data/local/tmp/wyu-monet-enabled",
@@ -375,4 +335,143 @@ suspend fun requestRoot(): RootState = withContext(Dispatchers.IO) {
         val exit = p.waitFor()
         if (exit == 0 && output.contains("uid=0")) RootState.Granted else RootState.Denied
     } catch (_: Exception) { RootState.Denied }
+}
+
+// 监听配置文件变化，自动设置闹钟（解决 Android 14+ 跨进程广播限制）
+private var configWatcher: android.os.FileObserver? = null
+fun startConfigWatcher(ctx: android.content.Context) {
+    val configFile = java.io.File("/data/local/tmp/wps-miuix-checkin.txt")
+    if (!configFile.exists()) return
+    configWatcher?.stopWatching()
+    configWatcher = object : android.os.FileObserver(configFile.absolutePath, CLOSE_WRITE) {
+        override fun onEvent(event: Int, path: String?) {
+            try {
+                val content = configFile.readText().trim()
+                val lines = content.lines()
+                if (lines.isEmpty() || lines[0].trim() != "true") return
+                val hour = lines[1].trim().toIntOrNull() ?: return
+                val minute = lines[2].trim().toIntOrNull() ?: return
+                val cal = java.util.Calendar.getInstance()
+                cal.set(java.util.Calendar.HOUR_OF_DAY, hour)
+                cal.set(java.util.Calendar.MINUTE, minute)
+                cal.set(java.util.Calendar.SECOND, 0)
+                if (cal.timeInMillis <= System.currentTimeMillis()) {
+                    cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
+                }
+                val am = ctx.getSystemService(android.content.Context.ALARM_SERVICE) as android.app.AlarmManager
+                val intent = android.content.Intent("com.wps.enhancer.CHECKIN_ACTION")
+                intent.setPackage("com.wps.enhancer")
+                val pi = android.app.PendingIntent.getBroadcast(
+                    ctx, 0, intent,
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
+                am.setAlarmClock(android.app.AlarmManager.AlarmClockInfo(cal.timeInMillis, null), pi)
+                android.util.Log.d("WYU", "FILE_OBSERVER: alarm set at ${cal.time}")
+            } catch (t: Throwable) {
+                android.util.Log.e("WYU", "FILE_OBSERVER error: ${t.message}")
+            }
+        }
+    }
+    configWatcher?.startWatching()
+    // 立即读取已有配置并设闹钟
+    try {
+        val content = configFile.readText().trim()
+        val lines = content.lines()
+        if (lines.isNotEmpty() && lines[0].trim() == "true") {
+            val hour = lines[1].trim().toIntOrNull() ?: 0
+            val minute = lines[2].trim().toIntOrNull() ?: 0
+            val cal = java.util.Calendar.getInstance()
+            cal.set(java.util.Calendar.HOUR_OF_DAY, hour)
+            cal.set(java.util.Calendar.MINUTE, minute)
+            cal.set(java.util.Calendar.SECOND, 0)
+            if (cal.timeInMillis <= System.currentTimeMillis()) {
+                cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
+            }
+            val am = ctx.getSystemService(android.content.Context.ALARM_SERVICE) as android.app.AlarmManager
+            val intent = android.content.Intent("com.wps.enhancer.CHECKIN_ACTION")
+            intent.setPackage("com.wps.enhancer")
+            val pi = android.app.PendingIntent.getBroadcast(
+                ctx, 0, intent,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
+            am.setAlarmClock(android.app.AlarmManager.AlarmClockInfo(cal.timeInMillis, null), pi)
+            android.util.Log.d("WYU", "INIT: alarm set at ${cal.time}")
+        }
+    } catch (_: Throwable) {}
+}
+
+// 接收 WPS 模块的广播，用模块 app 的 context 设闹钟（模块 app 有 SCHEDULE_EXACT_ALARM 权限）
+class ScheduleReceiver : android.content.BroadcastReceiver() {
+    override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
+        if (intent.action != "com.wps.enhancer.SCHEDULE_CHECKIN") return
+        val hour = intent.getIntExtra("hour", 0)
+        val minute = intent.getIntExtra("minute", 0)
+        val weekly = intent.getBooleanExtra("weekly", false)
+        try {
+            val cal = java.util.Calendar.getInstance()
+            cal.set(java.util.Calendar.HOUR_OF_DAY, hour)
+            cal.set(java.util.Calendar.MINUTE, minute)
+            cal.set(java.util.Calendar.SECOND, 0)
+            if (cal.timeInMillis <= System.currentTimeMillis()) {
+                cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
+            }
+            if (weekly) {
+                while (cal.get(java.util.Calendar.DAY_OF_WEEK) != java.util.Calendar.MONDAY) {
+                    cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
+                }
+            }
+            val am = context.getSystemService(android.content.Context.ALARM_SERVICE) as android.app.AlarmManager
+            val checkIntent = android.content.Intent("com.wps.enhancer.CHECKIN_ACTION")
+            checkIntent.setPackage("com.wps.enhancer")
+            val pi = android.app.PendingIntent.getBroadcast(
+                context, 0, checkIntent,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
+            am.setAlarmClock(android.app.AlarmManager.AlarmClockInfo(cal.timeInMillis, null), pi)
+            android.util.Log.d("WYU", "SCHEDULE set at ${cal.time}")
+        } catch (t: Throwable) {
+            android.util.Log.e("WYU", "SCHEDULE failed: ${t.message}")
+        }
+    }
+}
+
+// 跨进程 Service：WPS 模块调用 startService() 来设闹钟（模块 app 有 SCHEDULE_EXACT_ALARM 权限）
+class ScheduleService : android.app.Service() {
+    override fun onBind(intent: android.content.Intent?) = null
+    override fun onStartCommand(intent: android.content.Intent?, flags: Int, startId: Int): Int {
+        if (intent == null) { stopSelf(); return android.app.Service.START_NOT_STICKY }
+        val hour = intent.getIntExtra("hour", -1)
+        val minute = intent.getIntExtra("minute", -1)
+        try {
+            // 读取配置文件获取时间（优先用 intent extra，fallback 到文件）
+            val configFile = java.io.File("/data/local/tmp/wps-miuix-checkin.txt")
+            val h: Int
+            val m: Int
+            if (hour >= 0 && minute >= 0) {
+                h = hour; m = minute
+            } else if (configFile.exists()) {
+                val lines = configFile.readText().trim().lines()
+                if (lines.isEmpty() || lines[0].trim() != "true") { stopSelf(); return android.app.Service.START_NOT_STICKY }
+                h = lines[1].trim().toIntOrNull() ?: 0
+                m = lines[2].trim().toIntOrNull() ?: 0
+            } else { stopSelf(); return android.app.Service.START_NOT_STICKY }
+
+            val cal = java.util.Calendar.getInstance()
+            cal.set(java.util.Calendar.HOUR_OF_DAY, h)
+            cal.set(java.util.Calendar.MINUTE, m)
+            cal.set(java.util.Calendar.SECOND, 0)
+            if (cal.timeInMillis <= System.currentTimeMillis()) {
+                cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
+            }
+            val am = getSystemService(android.content.Context.ALARM_SERVICE) as android.app.AlarmManager
+            val checkIntent = android.content.Intent("com.wps.enhancer.CHECKIN_ACTION")
+            checkIntent.setPackage("com.wps.enhancer")
+            val pi = android.app.PendingIntent.getBroadcast(
+                this, 0, checkIntent,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
+            am.setAlarmClock(android.app.AlarmManager.AlarmClockInfo(cal.timeInMillis, null), pi)
+            android.util.Log.d("WYU", "SERVICE: alarm set at ${cal.time}")
+        } catch (t: Throwable) {
+            android.util.Log.e("WYU", "SERVICE error: ${t.message}")
+        }
+        stopSelf()
+        return android.app.Service.START_NOT_STICKY
+    }
 }

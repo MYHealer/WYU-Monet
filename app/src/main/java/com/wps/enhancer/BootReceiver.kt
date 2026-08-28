@@ -46,6 +46,11 @@ class BootReceiver : BroadcastReceiver() {
                     ProcessBuilder("su", "-c", "touch /data/user/0/com.wps.koa/files/wps-miuix.log && chmod 666 /data/user/0/com.wps.koa/files/wps-miuix.log").start().waitFor()
                 } catch (_: Exception) {}
 
+                // 预创建 /data/local/tmp/ 下的配置文件（WPS 模块写入用）
+                try {
+                    ProcessBuilder("su", "-c", "touch /data/local/tmp/wps-miuix-checkin.txt && chmod 666 /data/local/tmp/wps-miuix-checkin.txt").start().waitFor()
+                } catch (_: Exception) {}
+
                 // 部署斗界彩蛋视频
                 try {
                     val videoTarget = File("/data/local/tmp/doujie.mp4")
@@ -58,7 +63,7 @@ class BootReceiver : BroadcastReceiver() {
                 } catch (_: Exception) {}
 
                 // 派发 root 定时器
-                scheduleRootCheckin(context)
+                scheduleRootCheckin()
             }.apply { isDaemon = true; name = "wyu-boot-scheduler" }.start()
         }
     }

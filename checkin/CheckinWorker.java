@@ -7,6 +7,7 @@ public class CheckinWorker {
     static String DATA_DIR = "/data/user/0/com.wps.koa/files";
     static String LOG = DATA_DIR + "/wps-miuix.log";
     static String PID_FILE = DATA_DIR + "/wps-checkin-timer.pid";
+    static String PID_FILE_LOCAL = "/data/local/tmp/wps-checkin-timer.pid";
 
     public static void main(String[] args) {
         if (args.length > 0 && "schedule".equals(args[0])) {
@@ -331,13 +332,19 @@ public class CheckinWorker {
             StringBuilder sb = new StringBuilder();
             sb.append("#!/system/bin/sh\n");
             sb.append("PIDFILE=").append(DATA_DIR).append("/wps-checkin-timer.pid\n");
+            sb.append("PIDFILE_LOCAL=/data/local/tmp/wps-checkin-timer.pid\n");
             sb.append("if [ -f \"$PIDFILE\" ]; then\n");
             sb.append("  OLD=$(cat \"$PIDFILE\")\n");
-            sb.append("  if [ -n \"$OLD\" ] && kill -0 \"$OLD\" 2>/dev/null; then\n");
+            sb.append("elif [ -f \"$PIDFILE_LOCAL\" ]; then\n");
+            sb.append("  OLD=$(cat \"$PIDFILE_LOCAL\")\n");
+            sb.append("else\n");
+            sb.append("  OLD=\"\"\n");
+            sb.append("fi\n");
+            sb.append("if [ -n \"$OLD\" ] && kill -0 \"$OLD\" 2>/dev/null; then\n");
             sb.append("    echo \"already running pid=$OLD\"; exit 0\n");
-            sb.append("  fi\n");
             sb.append("fi\n");
             sb.append("echo $$ > \"$PIDFILE\"\n");
+            sb.append("echo $$ > \"$PIDFILE_LOCAL\"\n");
             sb.append("while true; do\n");
             sb.append("  CFG=$(cat ").append(DATA_DIR).append("/wps-miuix-checkin.txt)\n");
             sb.append("  ENABLED=$(echo \"$CFG\" | sed -n '1p' | tr -d ' \\r')\n");
@@ -372,6 +379,7 @@ public class CheckinWorker {
     static boolean timerAlive() {
         try {
             String pid = readFile(PID_FILE).trim();
+            if (pid.isEmpty()) pid = readFile(PID_FILE_LOCAL).trim();
             if (pid.isEmpty()) return false;
             Process p = Runtime.getRuntime().exec(new String[]{"kill", "-0", pid});
             return p.waitFor() == 0;
