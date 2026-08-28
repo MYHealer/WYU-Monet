@@ -4637,18 +4637,26 @@ public final class WPSModule extends XposedModule {
         try {
             if (appContext == null) { log("SCHEDULE no context"); return; }
 
-            // 跨进程启动模块 app 的 Service 来设闹钟（WPS 进程无闹钟权限）
+            // 方式1：发广播给模块 app 的 ScheduleReceiver（跨进程设闹钟）
             try {
-                Intent intent = new Intent();
-                intent.setComponent(new android.content.ComponentName("com.wps.enhancer", "com.wps.enhancer.ScheduleService"));
+                Intent intent = new Intent("com.wps.enhancer.SCHEDULE_CHECKIN");
+                intent.setPackage("com.wps.enhancer");
                 intent.putExtra("hour", checkinHour);
                 intent.putExtra("minute", checkinMinute);
                 intent.putExtra("weekly", checkinWeekly);
-                appContext.startService(intent);
-                log("SCHEDULE service started hour=" + checkinHour + " min=" + checkinMinute);
+                appContext.sendBroadcast(intent);
+                log("SCHEDULE broadcast sent hour=" + checkinHour + " min=" + checkinMinute);
             } catch (Throwable t) {
-                log("SCHEDULE service failed: " + t.getMessage());
+                log("SCHEDULE broadcast failed: " + t.getMessage());
             }
+            // 方式2：启动 Service（备用）
+            try {
+                Intent svcIntent = new Intent();
+                svcIntent.setComponent(new android.content.ComponentName("com.wps.enhancer", "com.wps.enhancer.ScheduleService"));
+                svcIntent.putExtra("hour", checkinHour);
+                svcIntent.putExtra("minute", checkinMinute);
+                appContext.startService(svcIntent);
+            } catch (Throwable ignored) {}
         } catch (Throwable t) { log("SCHEDULE=" + t.getMessage()); }
     }
 
