@@ -4637,26 +4637,37 @@ public final class WPSModule extends XposedModule {
         try {
             if (appContext == null) { log("SCHEDULE no context"); return; }
 
-            // 方式1：发广播给模块 app 的 ScheduleReceiver（跨进程设闹钟）
-            try {
-                Intent intent = new Intent("com.wps.enhancer.SCHEDULE_CHECKIN");
-                intent.setPackage("com.wps.enhancer");
-                intent.putExtra("hour", checkinHour);
-                intent.putExtra("minute", checkinMinute);
-                intent.putExtra("weekly", checkinWeekly);
-                appContext.sendBroadcast(intent);
-                log("SCHEDULE broadcast sent hour=" + checkinHour + " min=" + checkinMinute);
-            } catch (Throwable t) {
-                log("SCHEDULE broadcast failed: " + t.getMessage());
+            java.util.Calendar cal = java.util.Calendar.getInstance();
+            cal.set(java.util.Calendar.HOUR_OF_DAY, checkinHour);
+            cal.set(java.util.Calendar.MINUTE, checkinMinute);
+            cal.set(java.util.Calendar.SECOND, 0);
+            if (cal.getTimeInMillis() <= System.currentTimeMillis()) {
+                cal.add(java.util.Calendar.DAY_OF_YEAR, 1);
             }
-            // 方式2：启动 Service（备用）
+            if (checkinWeekly) {
+                while (cal.get(java.util.Calendar.DAY_OF_WEEK) != java.util.Calendar.MONDAY) {
+                    cal.add(java.util.Calendar.DAY_OF_YEAR, 1);
+                }
+            }
+
+            // 用 AlarmManager 定时（不需要 root）
             try {
-                Intent svcIntent = new Intent();
-                svcIntent.setComponent(new android.content.ComponentName("com.wps.enhancer", "com.wps.enhancer.ScheduleService"));
-                svcIntent.putExtra("hour", checkinHour);
-                svcIntent.putExtra("minute", checkinMinute);
-                appContext.startService(svcIntent);
-            } catch (Throwable ignored) {}
+                android.app.AlarmManager am = (android.app.AlarmManager) appContext.getSystemService(Context.ALARM_SERVICE);
+                Intent intent = new Intent("com.wps.enhancer.CHECKIN_ACTION");
+                intent.setPackage(appContext.getPackageName());
+                android.app.PendingIntent pi = android.app.PendingIntent.getBroadcast(
+                    appContext, 0, intent,
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
+                try {
+                    am.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, cal.getTimeInMillis(), pi);
+                    log("SCHEDULE exact at " + cal.getTime());
+                } catch (SecurityException e) {
+                    am.setAlarmClock(new android.app.AlarmManager.AlarmClockInfo(cal.getTimeInMillis(), null), pi);
+                    log("SCHEDULE via AlarmClock at " + cal.getTime());
+                }
+            } catch (Throwable t) {
+                log("SCHEDULE alarm failed: " + t.getMessage());
+            }
         } catch (Throwable t) { log("SCHEDULE=" + t.getMessage()); }
     }
 
